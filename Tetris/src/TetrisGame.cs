@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.ComponentModel;
+using System.Diagnostics;
 using System.Reflection.Metadata;
 
 namespace Tetris;
@@ -8,13 +9,21 @@ public class TetrisGame
     private bool _displayFps = false; // Whether to display the fps on the screen
     private bool _gameRunning;
     private int _desiredFps;
-    private int _desiredUps;
+    private float _desiredUps;
+
+    private int _gameOver;
 
     private int _score;
-    private int _level;
+    private int _level = 0;
     private int _linesCleared;
     private int _combo;
 
+    private Dictionary<int, int> _linesClearedPoints = new Dictionary<int, int>();
+    private Dictionary<int, int> _tSpinPoints = new Dictionary<int, int>();
+
+    private int _consecutiveTSpin = 0;
+    private int _consecutiveLines = 0; // How many lines cleared consecutively
+ 
     private Piece _currentPiece;
     private Piece _nextPiece;
     
@@ -23,11 +32,23 @@ public class TetrisGame
     private int _currentX = 0;
     private int _currentY = 0;
 
+    private bool _updateBusy = false;
+
     public TetrisGame(int desiredFps)
     {
         _gameRunning = true;
         _desiredFps = desiredFps;
         _desiredUps = 1;
+        
+        _linesClearedPoints.Add(1, 100);
+        _linesClearedPoints.Add(2, 300);
+        _linesClearedPoints.Add(3, 500);
+        _linesClearedPoints.Add(4, 800);
+    
+        _tSpinPoints.Add(1, 100);
+        _tSpinPoints.Add(2, 400);
+        _tSpinPoints.Add(3, 700);
+        _tSpinPoints.Add(4, 1200);
 
         _currentPiece = new Piece();
         _nextPiece = new Piece();
@@ -61,7 +82,9 @@ public class TetrisGame
             // If amount of time since last frame is the optimal time to update, then update.
             if (uDeltaTime >= uOptimalTime)
             {
-                Update();
+                // Stop default updating if it's being used
+                if (!_updateBusy)
+                    Update();
 
                 uDeltaTime -= uOptimalTime;
                 updates += 1;
@@ -70,23 +93,6 @@ public class TetrisGame
             if (fDeltaTime >= fOptimalTime)
             {
                 Render();
-                Console.SetCursorPosition(0, _grid.GetLength(1));
-                Console.Write("currentPos: " + _currentX + ", " + _currentY);
-                Console.Write("\ncurrentShape y length: " + _currentPiece.Shape.GetLength(1));
-
-                if (frameCount >= _desiredFps && _displayFps)
-                {
-                    // Calculate frame rate and updates per second.
-                    double elapsedSeconds = fpsTimer.Elapsed.TotalSeconds;
-                    double fps = frames / elapsedSeconds;
-                    double ups = updates / elapsedSeconds;
-
-                    fpsTimer.Restart();
-                    Console.WriteLine("FPS: " + Math.Round(fps) + "\nUPS: " + (int)ups);
-
-                    frames = 0;
-                    updates = 0;
-                }
 
                 fDeltaTime -= fOptimalTime;
                 frames += 1;
@@ -99,7 +105,7 @@ public class TetrisGame
     
     private void HandleControls() 
     {
-        if (Console.KeyAvailable)
+        while (Console.KeyAvailable)
         {
             ConsoleKeyInfo key = Console.ReadKey(true);
             
@@ -129,28 +135,31 @@ public class TetrisGame
                     if (IsColliding(_currentPiece, _currentX, _currentY + 1))
                         break;
                     
-                    _currentY++;
                     _score++;
-                    Update(forced: true); // Make a forced update to move the piece down, so pieces don't move through each other
+                    _updateBusy = true;
+                    Update(true); // Make a forced update to move the piece down, so pieces don't move through each other
+                    _updateBusy = false;
                     break;
                 
                 // Hard drop
                 case ConsoleKey.Spacebar:
                     int tilesMoved = 0;
                     
+                    _updateBusy = true;
                     while (!IsColliding(_currentPiece, _currentX, _currentY + 1) &&
                            !IsOutOfBounds(_currentPiece, _currentX, _currentY + 1))
                     {
-                        _currentY++;
+                        Update(true);
                         tilesMoved++;
 
                         if (IsColliding(_currentPiece, _currentX, _currentY + 1))
                         {
-                            PlacePiece();
-                            _score += tilesMoved * 2;
+                            _updateBusy = false;
                             break;
                         }
                     }
+                    _score += tilesMoved * 2;
+                    _updateBusy = false;
                     break;
                 
                 case ConsoleKey.Z:
@@ -190,19 +199,32 @@ public class TetrisGame
             _currentY + _currentPiece.Shape.GetLength(1) == _grid.GetLength(1))
             PlacePiece();
 
+        if (!IsOutOfBounds(_currentPiece, _currentX, _currentY + 1))
+            _currentY++;
+
         // If this is not a forced update
-        if (!forced && !IsOutOfBounds(_currentPiece, _currentX, _currentY))
-                _currentY++;
+        // if (!forced && !IsOutOfBounds(_currentPiece, _currentX, _currentY))
+        //         _currentY++;
     }
 
     private void Render()
     {
-        PrintGrid("#", ".");
-        PrintShapeOutline("*");
-        PrintPiece(_currentPiece, _currentX, _currentY, "#");
+        int offsetX = 10;
+        int offsetY = 1;
+
+        if (_gameOver)
+        {
+           // Print something here 
+        }
+        
+        PrintUi(offsetX, offsetY);
+        PrintGrid("#", " ", offsetX, offsetY);
+        PrintShapeOutline(".", offsetX, offsetY);
+        PrintPiece(_currentPiece, _currentX, _currentY, "#", offsetX, offsetY);
+        
     }
 
-    private void PrintPiece(Piece piece, int currentX, int currentY, string pieceChar)
+    private void PrintPiece(Piece piece, int currentX, int currentY, string pieceChar, int offsetX, int offsetY)
     {
         if (piece.Shape == null)
             return;
@@ -211,7 +233,7 @@ public class TetrisGame
         {
             for (int x = 0; x < piece.Shape.GetLength(0); x++)
             {
-                Console.SetCursorPosition(currentX + x, currentY + y);
+                Console.SetCursorPosition(currentX + x + offsetX, currentY + y + offsetY);
                 if (piece.Shape[x, y] == 1)
                     Console.Write(pieceChar);
             }
@@ -219,16 +241,17 @@ public class TetrisGame
         }
     }
 
-    private void PrintGrid(string pieceChar, string emptyChar)
+    private void PrintGrid(string pieceChar, string emptyChar, int offsetX, int offsetY)
     {
         for (int y = 0; y < _grid.GetLength(1); y++)
         {
             for (int x = 0; x < _grid.GetLength(0); x++)
             {
-                Console.SetCursorPosition(x, y);
-                Console.Write(emptyChar);
+                Console.SetCursorPosition(x + offsetX, y + offsetY);
                 if (_grid[x, y] == 1)
                     Console.Write(pieceChar);
+                else
+                    Console.Write(emptyChar);
             }
             Console.WriteLine();
         }
@@ -260,6 +283,9 @@ public class TetrisGame
     // Check if a line is full
     private void CheckLines()
     {
+        int clearedThisPass = 0;
+        int basePoints;
+        
         for (int y = 0; y < _grid.GetLength(1); y++)
         {
             bool full = true;
@@ -274,8 +300,26 @@ public class TetrisGame
             }
 
             if (full)
+            {
                 ClearLine(y);
+                clearedThisPass++;
+            }
         }
+        if (clearedThisPass == 0)
+        {
+            _consecutiveLines = 0;
+            return;
+        }
+        _consecutiveLines++;
+        
+        basePoints = _linesClearedPoints[clearedThisPass];
+        if (_currentPiece.PieceType is Piece.Pieces.T)
+            basePoints = _tSpinPoints[clearedThisPass];
+        
+        if (_consecutiveLines > 1)
+            _score += (int) (basePoints * 1.5) * (_level + 1);
+        else
+            _score += basePoints * (_level + 1);
     }
 
     private void ClearLine(int startY)
@@ -292,6 +336,10 @@ public class TetrisGame
             for (int x = 0; x < _grid.GetLength(0); x++)
                 _grid[x, y] = tempLine[x];
         }
+
+        _linesCleared++;
+        if (_linesCleared % 10 == 0)
+            _level++;
     }
 
     /// <summary>
@@ -333,7 +381,7 @@ public class TetrisGame
                currentY < 0 || currentY + piece.Shape.GetLength(1) > _grid.GetLength(1);
     }
 
-    private void PrintShapeOutline(string outlineChar)
+    private void PrintShapeOutline(string outlineChar, int offsetX, int offsetY)
     {
         Piece tempPiece = new Piece(_currentPiece.PieceType)
         {
@@ -349,6 +397,112 @@ public class TetrisGame
             maxY++;
         }
         
-        PrintPiece(tempPiece, maxX, maxY, outlineChar);
+        PrintPiece(tempPiece, maxX, maxY, outlineChar, offsetX, offsetY);
+    }
+
+    /// <summary>
+    /// Prints thing like score, next piece, etc.
+    /// </summary>
+    private void PrintUi(int gameOffsetX, int gameOffsetY)
+    {
+        PrintGameStats(gameOffsetX, gameOffsetY);
+        PrintBorders(gameOffsetX, gameOffsetY);
+        PrintNextPiece(gameOffsetX, gameOffsetY);
+    }
+
+    private void PrintBorders(int gameOffsetX, int gameOffsetY)
+    {
+        Console.SetCursorPosition(0, 0);
+        
+        Console.Write("/");
+        
+        // Top line
+        for (int i = 0; i < gameOffsetX * 3; i++)
+            Console.Write("-");
+        Console.Write("\\");
+
+        // Left border
+        for (int i = 1; i < 21; i++)
+        {
+            Console.SetCursorPosition(0, i);
+            Console.Write("|");
+        }
+        Console.Write("\n\\");
+        
+        // Right border
+        for (int i = 1; i < 21; i++)
+        {
+            Console.SetCursorPosition(gameOffsetX * 3, i);
+            Console.Write("|");
+        }
+        
+        // Left inside border
+        for (int i = 1; i < 21; i++)
+        {
+            Console.SetCursorPosition(gameOffsetX - 1, i);
+            Console.Write("|");
+        }
+        
+        // Right inside border
+        for (int i = 1; i < 21; i++)
+        {
+            Console.SetCursorPosition(gameOffsetX * 2, i);
+            Console.Write("|");
+        }
+        
+        Console.SetCursorPosition(1, 21);
+        
+        // Bottom line
+        for (int i = 0; i < gameOffsetX * 3; i++)
+            Console.Write("-");
+        Console.Write("/");
+    }
+
+    private void PrintGameStats(int offsetX, int offsetY)
+    {
+        Console.SetCursorPosition(2, 2);
+        Console.Write("Score:\n " + _score);
+        
+        Console.SetCursorPosition(2, 6);
+        Console.Write("Level:\n " + _level);
+        
+        Console.SetCursorPosition(2, 10);
+        Console.Write("Lines:\n " + _linesCleared);
+    }
+
+    private void PrintNextPiece(int gameOffsetX, int gameOffsetY)
+    {
+        Console.SetCursorPosition(gameOffsetX * 2 + 3, gameOffsetY * 2);
+        Console.Write("Next:\n");
+
+        if (_nextPiece.Shape == null)
+        {
+            Console.Write("ERROR!");
+            return;
+        }
+
+        for (int y = 0; y < 10; y++)
+        {
+            for (int x = 0; x < 6; x++)
+            {
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 1);
+                Console.Write(" ");
+            }
+            Console.WriteLine();
+        }
+
+        for (int y = 0; y < _nextPiece.Shape.GetLength(1); y++)
+        {
+            for (int x = 0; x < _nextPiece.Shape.GetLength(0); x++)
+            {
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 1);
+                
+                if (_nextPiece.Shape[x, y] == 1)
+                    Console.Write(_nextPiece.Shape[x, y]);
+                else
+                    Console.Write(" ");
+            }
+            Console.WriteLine();
+        }
     }
 }
