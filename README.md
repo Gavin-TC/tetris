@@ -1,5 +1,5 @@
 # Terminal Tetris in C#
-This is an almost feature complete remake of Tetris.
+This is an almost feature complete remake of Tetris in the terminal with C#.
 
 ## Missing and bugs
 - Missing t-spin combos
