@@ -1,6 +1,8 @@
 ﻿using System.ComponentModel;
 using System.Diagnostics;
+using System.Net.Mail;
 using System.Reflection.Metadata;
+using Microsoft.VisualBasic.CompilerServices;
 
 namespace Tetris;
 
@@ -10,13 +12,19 @@ public class TetrisGame
     private bool _gameRunning;
     private int _desiredFps;
     private float _desiredUps;
+    private bool _pauseRender = false;
 
-    private int _gameOver;
+    private bool _gameOver = false;
 
     private int _score;
-    private int _level = 0;
+    private int _level = 1;
     private int _linesCleared;
     private int _combo;
+    private int _highScore = 0;
+    private bool _newHighScore = true;
+    
+    // This effects UPS
+    private float[] speeds = [1.25f, 1.40f, 1.58f, 1.82f, 2.14f, 2.61f, 3.33f, 4.62f, 7.5f, 10f];
 
     private Dictionary<int, int> _linesClearedPoints = new Dictionary<int, int>();
     private Dictionary<int, int> _tSpinPoints = new Dictionary<int, int>();
@@ -26,10 +34,12 @@ public class TetrisGame
  
     private Piece _currentPiece;
     private Piece _nextPiece;
+    private Piece? _holdPiece;
+    private bool _usedHold = false;
     
     private int[,] _grid = new int[10, 20];
 
-    private int _currentX = 0;
+    private int _currentX;
     private int _currentY = 0;
 
     private bool _updateBusy = false;
@@ -38,7 +48,19 @@ public class TetrisGame
     {
         _gameRunning = true;
         _desiredFps = desiredFps;
-        _desiredUps = 1;
+        _desiredUps = 1.0f;
+
+        _currentX = _grid.GetLength(0) / 2 - 2;
+        
+        if (!File.Exists("highscore.txt"))
+        {
+            using FileStream fs = File.Create("highscore.txt");
+        }
+
+        using (StreamReader reader = new StreamReader("highscore.txt"))
+        {
+            _highScore = Math.Max(0, IntegerType.FromString(reader.ReadToEnd()));
+        }
         
         _linesClearedPoints.Add(1, 100);
         _linesClearedPoints.Add(2, 300);
@@ -78,6 +100,8 @@ public class TetrisGame
             startTime = currentTime;
 
             HandleControls();
+            _desiredUps = speeds[Math.Min(_level - 1, speeds.Length - 1)];
+            uOptimalTime = (double)1_000 / _desiredUps;
 
             // If amount of time since last frame is the optimal time to update, then update.
             if (uDeltaTime >= uOptimalTime)
@@ -92,7 +116,8 @@ public class TetrisGame
 
             if (fDeltaTime >= fOptimalTime)
             {
-                Render();
+                if (!_pauseRender)
+                    Render();
 
                 fDeltaTime -= fOptimalTime;
                 frames += 1;
@@ -108,7 +133,13 @@ public class TetrisGame
         while (Console.KeyAvailable)
         {
             ConsoleKeyInfo key = Console.ReadKey(true);
-            
+
+            if (_gameOver)
+            {
+                // Allow user to navigate UI
+                return;
+            }
+                
             switch (key.Key)
             {
                 case ConsoleKey.LeftArrow:
@@ -135,10 +166,11 @@ public class TetrisGame
                     if (IsColliding(_currentPiece, _currentX, _currentY + 1))
                         break;
                     
-                    _score++;
                     _updateBusy = true;
-                    Update(true); // Make a forced update to move the piece down, so pieces don't move through each other
+                    Update();
                     _updateBusy = false;
+                    if (!_gameOver)
+                        _score++;
                     break;
                 
                 // Hard drop
@@ -146,20 +178,15 @@ public class TetrisGame
                     int tilesMoved = 0;
                     
                     _updateBusy = true;
-                    while (!IsColliding(_currentPiece, _currentX, _currentY + 1) &&
-                           !IsOutOfBounds(_currentPiece, _currentX, _currentY + 1))
+                    while (!Update())
                     {
-                        Update(true);
                         tilesMoved++;
-
-                        if (IsColliding(_currentPiece, _currentX, _currentY + 1))
-                        {
-                            _updateBusy = false;
-                            break;
-                        }
                     }
-                    _score += tilesMoved * 2;
                     _updateBusy = false;
+                    
+                    // If this move didn't lose this game, add score
+                    if (!_gameOver)
+                        _score += tilesMoved * 2;
                     break;
                 
                 case ConsoleKey.Z:
@@ -170,6 +197,28 @@ public class TetrisGame
                         break;
                     
                     _currentPiece.RotateCw();
+                    break;
+                
+                // Hold piece
+                case ConsoleKey.C:
+                    if (_usedHold)
+                        break;
+                    
+                    if (_holdPiece == null)
+                    {
+                        _holdPiece = _currentPiece;
+                        _currentPiece = _nextPiece;
+                        _nextPiece = new Piece();
+                    }
+                    else
+                    {
+                        Piece tempPiece = _holdPiece;
+                        _holdPiece = _currentPiece;
+                        _currentPiece = tempPiece;
+                    }
+                    _currentX = _grid.GetLength(0) / 2 - 2;
+                    _currentY = 0;
+                    _usedHold = true;
                     break;
                 
                 case ConsoleKey.UpArrow:
@@ -189,22 +238,30 @@ public class TetrisGame
         }
     }
 
-    private void Update(bool forced = false)
+    /// <summary>
+    /// Moves a piece down until it collides with a piece,
+    /// or is out of bounds.
+    /// </summary>
+    /// <returns>True if a piece was placed during the update, false otherwise</returns>
+    private bool Update()
     {
-        if (_currentPiece.Shape == null)
-            return;
+        if (_currentPiece.Shape == null || _gameOver)
+            return false;
         
         // If it's colliding with a piece or at the bottom
         if (IsColliding(_currentPiece, _currentX, _currentY + 1) ||
             _currentY + _currentPiece.Shape.GetLength(1) == _grid.GetLength(1))
+        {
             PlacePiece();
+            if (_usedHold)
+                _usedHold = false;
+            return true;
+        }
 
         if (!IsOutOfBounds(_currentPiece, _currentX, _currentY + 1))
             _currentY++;
 
-        // If this is not a forced update
-        // if (!forced && !IsOutOfBounds(_currentPiece, _currentX, _currentY))
-        //         _currentY++;
+        return false;
     }
 
     private void Render()
@@ -212,16 +269,53 @@ public class TetrisGame
         int offsetX = 10;
         int offsetY = 1;
 
-        if (_gameOver)
-        {
-           // Print something here 
-        }
         
         PrintUi(offsetX, offsetY);
         PrintGrid("#", " ", offsetX, offsetY);
-        PrintShapeOutline(".", offsetX, offsetY);
+        if (!_gameOver)
+            PrintShapeOutline(".", offsetX, offsetY);
         PrintPiece(_currentPiece, _currentX, _currentY, "#", offsetX, offsetY);
         
+        if (_gameOver)
+        {
+            _pauseRender = true;
+            string gameOverText  = "|Game Over!|";
+            string highScoreText = "| Hiscore! |";
+            
+            offsetX -= 1;
+            if (_newHighScore)
+                offsetY += 5;
+            else
+                offsetY += 6;
+            
+            Console.SetCursorPosition(offsetX + 1, offsetY + 2);
+            for (int j = 1; j < gameOverText.Length - 1; j++)
+            {
+                Console.Write("-");
+            }
+            
+            Console.SetCursorPosition(offsetX, offsetY + 3);
+            Console.Write(gameOverText);
+            
+            if (_newHighScore)
+            {
+                Console.SetCursorPosition(offsetX+1, offsetY + 4);
+                for (int j = 1; j < gameOverText.Length - 1; j++)
+                {
+                    Console.Write(" ");
+                }
+
+                Console.SetCursorPosition(offsetX + 1, offsetY + 5);
+                Console.Write("Highscore!");
+                offsetY += 1;
+            }
+            
+            Console.SetCursorPosition(offsetX + 1, offsetY + 5);
+            for (int j = 1; j < gameOverText.Length - 1; j++)
+            {
+                Console.Write("-");
+            }
+        }
     }
 
     private void PrintPiece(Piece piece, int currentX, int currentY, string pieceChar, int offsetX, int offsetY)
@@ -278,6 +372,12 @@ public class TetrisGame
         
         _currentPiece = _nextPiece;
         _nextPiece = new Piece();
+
+        if (IsColliding(_currentPiece, _currentX, _currentY))
+        {
+            _gameOver = true;
+            SaveGame();
+        }
     }
 
     // Check if a line is full
@@ -408,6 +508,7 @@ public class TetrisGame
         PrintGameStats(gameOffsetX, gameOffsetY);
         PrintBorders(gameOffsetX, gameOffsetY);
         PrintNextPiece(gameOffsetX, gameOffsetY);
+        PrintHoldPiece(gameOffsetX, gameOffsetY);
     }
 
     private void PrintBorders(int gameOffsetX, int gameOffsetY)
@@ -468,6 +569,12 @@ public class TetrisGame
         
         Console.SetCursorPosition(2, 10);
         Console.Write("Lines:\n " + _linesCleared);
+        
+        Console.SetCursorPosition(1, 14);
+        Console.Write("Hiscore:\n " + _highScore);
+        
+        Console.SetCursorPosition(1, 18);
+        Console.Write("Combo:\n " + _consecutiveLines);
     }
 
     private void PrintNextPiece(int gameOffsetX, int gameOffsetY)
@@ -485,7 +592,7 @@ public class TetrisGame
         {
             for (int x = 0; x < 6; x++)
             {
-                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 1);
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 2);
                 Console.Write(" ");
             }
             Console.WriteLine();
@@ -495,14 +602,82 @@ public class TetrisGame
         {
             for (int x = 0; x < _nextPiece.Shape.GetLength(0); x++)
             {
-                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 1);
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 2);
                 
                 if (_nextPiece.Shape[x, y] == 1)
-                    Console.Write(_nextPiece.Shape[x, y]);
+                    Console.Write("#");
                 else
                     Console.Write(" ");
             }
             Console.WriteLine();
+        }
+    }
+    
+    
+    private void PrintHoldPiece(int gameOffsetX, int gameOffsetY)
+    {
+        int yOffset = 8;
+        
+        Console.SetCursorPosition(gameOffsetX * 2 + 3, gameOffsetY * 2 + yOffset);
+        Console.Write("Hold:\n");
+
+        if (_holdPiece == null || _holdPiece.Shape == null)
+        {
+            return;
+        }
+
+        for (int y = 0; y < 7; y++)
+        {
+            for (int x = 0; x < 6; x++)
+            {
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 2 + yOffset);
+                Console.Write(" ");
+            }
+            Console.WriteLine();
+        }
+
+        for (int y = 0; y < _holdPiece.Shape.GetLength(1); y++)
+        {
+            for (int x = 0; x < _holdPiece.Shape.GetLength(0); x++)
+            {
+                Console.SetCursorPosition(x + gameOffsetX * 2 + 3, y + gameOffsetY * 2 + 2 + yOffset);
+                
+                if (_holdPiece.Shape[x, y] == 1)
+                    Console.Write("#");
+                else
+                    Console.Write(" ");
+            }
+            Console.WriteLine();
+        }
+    }
+
+    
+    /// <summary>
+    /// Attempts to find already saved highscore.
+    /// If found, it checks if the saved highscore is lower than the current game's highscore.
+    /// If so, it saves the game's score to the highscore.txt file.
+    /// </summary>
+    private void SaveGame()
+    {
+        int scoreFound = -1;
+
+        if (!File.Exists("highscore.txt"))
+        {
+            using FileStream fs = File.Create("highscore.txt");
+        }
+        
+        using (StreamReader reader = new StreamReader("highscore.txt"))
+        {
+            string? scoreText = reader.ReadLine();
+            scoreFound = IntegerType.FromString(scoreText);
+        }
+        
+        using (StreamWriter writer = new StreamWriter("highscore.txt"))
+        {
+            if (_score > scoreFound)
+                _newHighScore = true;
+            writer.Write(_score > scoreFound ? _score : scoreFound);
+            writer.Close();
         }
     }
 }
