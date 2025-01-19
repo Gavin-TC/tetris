@@ -59,7 +59,17 @@ public class TetrisGame
 
         using (StreamReader reader = new StreamReader("highscore.txt"))
         {
-            _highScore = Math.Max(0, IntegerType.FromString(reader.ReadToEnd()));
+            int scoreFound = -1;
+            try
+            {
+                scoreFound = IntegerType.FromString(reader.ReadToEnd());
+            }
+            catch (Exception e)
+            {
+                // ignored
+            }
+
+            _highScore = Math.Max(0, scoreFound);
         }
         
         _linesClearedPoints.Add(1, 100);
@@ -142,6 +152,7 @@ public class TetrisGame
                 
             switch (key.Key)
             {
+                case ConsoleKey.A:
                 case ConsoleKey.LeftArrow:
                     if (IsOutOfBounds(_currentPiece, _currentX - 1, _currentY) ||
                         IsColliding(_currentPiece, _currentX - 1, _currentY))
@@ -150,6 +161,7 @@ public class TetrisGame
                     _currentX--;
                     break;
                 
+                case ConsoleKey.D:
                 case ConsoleKey.RightArrow:
                     if (_currentPiece.Shape == null)
                         break;
@@ -162,6 +174,7 @@ public class TetrisGame
                     break;
                 
                 // Soft drop
+                case ConsoleKey.S:
                 case ConsoleKey.DownArrow:
                     if (IsColliding(_currentPiece, _currentX, _currentY + 1))
                         break;
@@ -221,6 +234,7 @@ public class TetrisGame
                     _usedHold = true;
                     break;
                 
+                case ConsoleKey.W:
                 case ConsoleKey.UpArrow:
                     Piece ccwPiece = new Piece(_currentPiece.PieceType);
                     ccwPiece.RotateCcw();
